@@ -4,6 +4,7 @@ use core::mem::MaybeUninit;
 use trayicon::{MenuBuilder, MenuItem, TrayIconBuilder};
 use winapi::um::winuser;
 
+use std::io::Result;
 use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_SET_VALUE};
 use winreg::RegKey;
 
@@ -11,7 +12,7 @@ fn main() {
     tray();
 }
 
-fn switch_theme(change_system_theme: bool) -> std::io::Result<()> {
+fn switch_theme(change_system_theme: bool) -> Result<()> {
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
     let themes = hkcu.open_subkey("Software\\Microsoft\\Windows\\CurrentVersion\\Themes")?;
     let personalize = themes.open_subkey_with_flags("Personalize", KEY_READ | KEY_SET_VALUE)?;
@@ -40,17 +41,17 @@ fn tray() {
 
     use Events::*;
 
-    let (s, r) = std::sync::mpsc::channel::<Events>();
+    let (sender, receiver) = std::sync::mpsc::channel::<Events>();
     let icon = include_bytes!("../assets/tray_icon.ico");
 
     let mut tray_icon = TrayIconBuilder::new()
-        .sender(s)
+        .sender(sender)
         .icon_from_buffer(icon)
         .tooltip("Light/Dark mode toggle")
-        .on_click(Events::ClickTrayIcon)
+        .on_click(ClickTrayIcon)
         .menu(
             MenuBuilder::new()
-                .checkable("System Theme", false, CheckItem)
+                .checkable("System Theme", read_setting(), CheckItem)
                 .separator()
                 .with(MenuItem::Item {
                     name: "2021 itsTyrion".into(),
@@ -65,18 +66,19 @@ fn tray() {
         .unwrap();
 
     std::thread::spawn(move || {
-        r.iter().for_each(|m| match m {
+        receiver.iter().for_each(|m| match m {
             ClickTrayIcon => {
                 let state = tray_icon.get_menu_item_checkable(CheckItem).unwrap();
-                std::thread::spawn(move || switch_theme(state).unwrap());
+                switch_theme(state).unwrap();
             }
             CheckItem => {
                 let state = tray_icon.get_menu_item_checkable(CheckItem).unwrap();
                 tray_icon
                     .set_menu_item_checkable(CheckItem, !state)
                     .unwrap();
+                write_setting(!state);
             }
-            Events::Exit => {
+            Exit => {
                 std::process::exit(0);
             }
             e => {
@@ -98,4 +100,27 @@ fn tray() {
             }
         }
     }
+}
+
+use dirs::config_dir;
+use std::fs;
+
+fn write_setting(change_system_theme: bool) {
+    let path = config_dir().unwrap().join("YinYang");
+    if !path.exists() {
+        fs::create_dir_all(&path).unwrap();
+    }
+    let config = path.join("config.txt");
+
+    fs::write(config, change_system_theme.to_string()).unwrap();
+}
+
+fn read_setting() -> bool {
+    let config = config_dir().unwrap().join("YinYang").join("config.txt");
+    if !config.exists() {
+        write_setting(false);
+    }
+    let value = fs::read_to_string(config).unwrap();
+
+    value.trim().parse().unwrap()
 }
